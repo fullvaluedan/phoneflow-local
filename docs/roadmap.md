@@ -3,7 +3,9 @@
 Implemented: bounded persistent worker, explicit app packages, combined
 navigation and observation, per-device lock, optional installed Artemis
 observation adapter, full/cropped evidence, per-account ledger, attempt versus
-verified-action accounting, queue expiry and stale-observation guards.
+verified-action accounting, queue expiry, stale-observation guards and a stdio MCP connector with native
+image responses and coordinate mapping. Four five-minute browse intervals were
+exercised, with interruptions recorded in validation.
 
 Priorities:
 1. Benchmark helper and ADB observations over the same screens and measure total
@@ -13,9 +15,9 @@ Priorities:
    surfaces require assistant confirmation; no automatic screen classifier.
 3. Add a transport-neutral observation/action interface before wiring another
    backend. Compare Mobile Next mobile-mcp as an existing MCP transport.
-4. Add MCP tools for combined commands so hosts return text and images in one
-   tool result. Current file queue is local and inspectable, but two host calls
-   are still needed when the host must separately display the returned image.
+4. Measure the delivered MCP tools in additional assistant hosts. Native text
+   and image delivery is implemented and verified through a stdio client;
+   reconnect an existing host before expecting newly registered tools.
 5. Add content-region OCR or short video samples for context when accessibility
    data is incomplete. Do not use pixel-change detection on a playing video as
    proof that navigation succeeded.

@@ -38,3 +38,40 @@ and generic commands are implemented; they do not imply these workflows pass.
 Recommended next measurement: same screen, same phone, repeated cold/warm ADB
 and helper observations, with screenshot transport and model-turn latency
 reported separately. Keep visual context checks for video/image content.
+
+## Four-platform and MCP validation update
+
+24 unit tests passed on the existing Python 3.12 environment with MCP 1.29.0
+and Pillow. New cases cover image mapping/crop origin, session-path isolation,
+selector region conflicts, Windows transient sharing failures, blocking prompts,
+scroll freshness and the one-time browse timer. The installed SDK emits a
+nonfatal Pydantic annotation warning; protocol initialization and tool calls work.
+
+A real stdio MCP client exercised start, launch, inline images, navigation,
+observation, review, status, result/error handling and stop on the physical phone.
+The following intervals used browse-only sessions, with no likes, saves,
+follows, comments, applications or messages. Times are Asia/Taipei, 2026-10-20.
+
+| Platform | Bounded interval | Result |
+| --- | --- | --- |
+| TikTok | 21:22:33–21:27:33 | Video navigation and visual review; pauses for reasoning |
+| Instagram | 21:30:26–21:35:26 | Home feed scrolling after user-authorized notification denial |
+| Facebook | 21:39:33–21:44:34 | Home feed scrolling; setup included closing an accidentally opened story |
+| LinkedIn | 21:47:21–21:52:21 | Browsing with search/filter recovery; not uninterrupted scrolling |
+
+Each timer ended within about 0.33 seconds of its five-minute deadline and
+recorded Home cleanup. This is a sample, not a hard real-time guarantee.
+LinkedIn encountered a system update prompt during preflight (no update installed)
+and a stale accessibility selector opened a job preview during navigation.
+Back closed it. Selector taps now require an image-grounded region and reject
+conflicting node positions. The regression test verifies that rejection.
+
+A subsequent short TikTok smoke check of the final code verified launch,
+pre-scroll inspection, a visible video transition and native image delivery,
+then explicit stop/Home. Its warm helper captures were 344 and 203 ms; full
+launch tool response was 2.4 seconds and next response 2.7 seconds, excluding
+assistant reasoning. These are individual samples, not throughput benchmarks.
+
+The earlier limitations still apply: no automatic account/content recognition,
+no validated engagement workflows, and no unattended four-app classifier.
+Runtime screenshots, account identities and local configuration are not published.

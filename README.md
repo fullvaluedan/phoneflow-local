@@ -54,11 +54,13 @@ No helper credentials or transport tokens are printed by PhoneFlow.
 ## Commands
 
 Requests are JSON objects. Call results contain `ok` and either `result` or
-`error`. Observation IDs expire after 45 seconds for actions; observe again
-when stale. All coordinates and crop boxes use original screenshot pixels.
+`error`. Observation IDs expire after 45 seconds for taps and other actions.
+Navigation-only `next` permits up to 120 seconds with a pre-scroll hierarchy
+check; observe again when stale. All coordinates and crop boxes use original screenshot pixels.
 
 | Operation | Required fields / behavior |
 | --- | --- |
+| `begin_browse` | Latest `observation`, `surface: feed/video`; arms the configured duration once within 90 seconds of start, after setup |
 | `launch` | Opens configured app; returns observation |
 | `observe` | `mode`: `auto`, `image`, `text`, or `both`; optional `crop: [x1,y1,x2,y2]` |
 | `next` | Latest `observation`, confirmed `surface`: `feed`, `video`, `carousel`; swipe + settle + observation |
@@ -79,8 +81,12 @@ Example: after inspecting an observation, advance a video:
 Exact selector example:
 
 ```json
-{"op":"tap","observation":"ID_FROM_LATEST_RESULT","selector":{"content-desc":"Back"},"action":"navigate"}
+{"op":"tap","observation":"ID_FROM_LATEST_RESULT","selector":{"content-desc":"Back"},"selector_region":[0,80,160,240],"action":"navigate"}
 ```
+
+The example region is illustrative; replace it with the button region in the
+current image. A selector outside that region is rejected because accessibility
+labels can remain stale even with atomic snapshots.
 
 Navigation coordinates must be grounded in the latest image. Do not assume the
 same button position across apps or between feed, search, video and comments.
@@ -145,5 +151,41 @@ cover guards/accounting and do not operate a real device. Live UI verification
 must start with device exploration; never invent an app interaction path.
 
 See [research](docs/research.md), [validation](docs/validation.md) and
-[next steps](docs/roadmap.md). This is a CLI prototype; an MCP server and
-automatic content recognition are not implemented.
+[next steps](docs/roadmap.md). The CLI and stdio MCP connector are implemented. Automatic content recognition
+and complete app-specific workflows remain future work.
+
+## MCP connector
+
+Install this project with `pip install -e ".[mcp]"`, or use an existing Python
+interpreter with the MCP v1 SDK and Pillow installed. Run `python phoneflow_mcp.py`
+as a stdio server. There is no HTTP listener or embedded model client.
+
+Configure these environment variables in your assistant host:
+
+| Variable | Purpose |
+| --- | --- |
+| `PHONEFLOW_ADB` | ADB executable; defaults to `adb` |
+| `PHONEFLOW_HOME` | Private session directory; defaults to `sessions` inside this checkout |
+| `PHONEFLOW_ARTEMIS_REPO` | Optional existing Artemis checkout |
+| `PHONEFLOW_ARTEMIS_PYTHON` | Its Python interpreter; set with the repo variable |
+| `PHONEFLOW_LEGACY_WORKSPACE` | Optional workspace whose old timer files should be checked |
+
+Tools: `phoneflow_devices`, `phoneflow_start`, `phoneflow_observe`,
+`phoneflow_next`, `phoneflow_act`, `phoneflow_status`, `phoneflow_result`,
+`phoneflow_stop`. `phoneflow_act` also accepts `begin_browse`. MCP local holds
+are limited to 45 seconds to fit ordinary host call timeouts; CLI holds allow 60.
+
+Start, wait for running, launch, inspect the image/account and handle authorized
+setup. Optionally arm `begin_browse` once the feed is visible. Then issue one
+contextual navigation/action at a time. Stop returns the device Home best effort.
+Images are returned inline with original-to-resized pixel mapping and crop origin.
+Do not use resized image coordinates directly as screen coordinates.
+A pending request must be checked with `phoneflow_result`, rather than replayed.
+
+Example Codex registration (replace paths):
+
+```sh
+codex mcp add phoneflow --env PHONEFLOW_ADB=/path/to/adb -- /path/to/python /path/to/phoneflow_mcp.py
+```
+
+Reconnect the MCP server or restart the assistant host after registering it.

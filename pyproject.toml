@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phoneflow-local"
-version = "0.1.0"
+version = "0.2.0"
 description = "Bounded local Android control for an assistant, with optional Artemis observations"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,9 +13,11 @@ dependencies = []
 
 [project.optional-dependencies]
 images = ["Pillow>=10"]
+mcp = ["mcp>=1.28,<2", "Pillow>=10"]
 
 [project.scripts]
 phoneflow = "phone_flow:main"
+phoneflow-mcp = "phoneflow_mcp:main"
 
 [tool.setuptools]
-py-modules = ["phone_flow", "artemis_observer"]
+py-modules = ["phone_flow", "artemis_observer", "phoneflow_mcp"]

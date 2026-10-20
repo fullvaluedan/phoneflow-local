@@ -7,9 +7,9 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from phone_flow import Flow, DeviceLock, summarize, legacy_busy, write_json, utc
+from phone_flow import Flow, DeviceLock, summarize, legacy_busy, write_json, read_json, utc
 
 
 class FlowTests(unittest.TestCase):
@@ -98,6 +98,41 @@ class FlowTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 with DeviceLock(str(self.root)):
                     self.fail('Second owner acquired the same device lock')
+
+    def test_selector_requires_visual_region(self):
+        with self.assertRaisesRegex(ValueError, 'selector_region'):
+            self.flow.handle(dict(op='tap', observation='fresh', selector={'text': 'Posts'}))
+        self.flow.adb.assert_not_called()
+
+    def test_stale_selector_position_rejected(self):
+        self.flow.tree = Mock(return_value=(None, [{'text': 'Posts', 'bounds': '[0,1000][100,1100]'}]))
+        with self.assertRaisesRegex(ValueError, 'conflicts'):
+            self.flow.handle(dict(op='tap', observation='fresh', selector={'text': 'Posts'}, selector_region=[0,0,200,400]))
+        self.flow.adb.assert_not_called()
+
+    def test_navigation_can_use_90_second_observation(self):
+        self.flow.last['mono'] -= 90
+        self.flow.tree = Mock(return_value=(None, []))
+        self.flow.geometry = Mock(return_value=(1080,2392))
+        self.flow.adb = Mock()
+        self.flow.observe = Mock(return_value={'id': 'next'})
+        self.flow.handle(dict(op='next', observation='fresh', surface='video', settle=0))
+        self.flow.adb.assert_called_once()
+
+    def test_blocking_prompt_prevents_scroll(self):
+        self.flow.tree = Mock(return_value=(None, [{'text': 'Verify your identity'}]))
+        with self.assertRaises(RuntimeError):
+            self.flow.handle(dict(op='next', observation='fresh', surface='video'))
+        self.flow.adb.assert_not_called()
+
+    def test_timer_cannot_be_rearmed(self):
+        self.flow.state['browsing_started_utc'] = utc()
+        with self.assertRaisesRegex(ValueError, 'once'):
+            self.flow.handle(dict(op='begin_browse', observation='fresh', surface='feed'))
+
+    def test_read_retries_transient_windows_sharing_error(self):
+        with patch.object(Path, 'read_text', side_effect=[PermissionError(), '{"ok": true}']), patch('phone_flow.time.sleep'):
+            self.assertEqual(read_json('fixture.json'), {'ok': True})
 
 
 if __name__ == '__main__':

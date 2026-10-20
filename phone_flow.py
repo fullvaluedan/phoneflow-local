@@ -80,11 +80,24 @@ def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     temp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(temp, path)
+    for attempt in range(20):
+        try:
+            os.replace(temp, path)
+            break
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(.05)
 
 
 def read_json(path):
-    return json.loads(Path(path).read_text(encoding='utf-8'))
+    for attempt in range(20):
+        try:
+            return json.loads(Path(path).read_text(encoding='utf-8'))
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(.05)
 
 
 class DeviceLock:
@@ -182,11 +195,16 @@ class Flow:
         if self.foreground() != self.package:
             raise RuntimeError('Foreground app changed; observe or launch before acting')
 
-    def fresh(self, request):
+    def fresh(self, request, max_age=45):
         if not self.last or request.get('observation') != self.last['id']:
             raise ValueError('Supply the latest observation ID')
-        if time.monotonic()-self.last['mono'] > 45:
-            raise ValueError('Observation older than 45 seconds; observe again')
+        if time.monotonic()-self.last['mono'] > max_age:
+            raise ValueError(f'Observation older than {max_age} seconds; observe again')
+
+    def settle(self, seconds=.7):
+        end = min(self.deadline, time.monotonic()+seconds)
+        while time.monotonic() < end and not (self.out/'stop-request.json').exists():
+            time.sleep(max(0, min(.05, end-time.monotonic())))
 
     def geometry(self):
         raw = self.text_adb('shell', 'wm', 'size')
@@ -289,6 +307,20 @@ class Flow:
             return self.observe(r.get('mode', 'auto'), r.get('crop'))
         if op == 'summary':
             return summarize(self.ledger, self.config['app'], self.config['account'])
+        if op == 'begin_browse':
+            self.fresh(r)
+            self.guard()
+            if self.state.get('browsing_started_utc'):
+                raise ValueError('Browse timer can only be armed once')
+            started = dt.datetime.fromisoformat(self.state['started_utc'])
+            if (dt.datetime.now(dt.timezone.utc)-started).total_seconds() > 90:
+                raise ValueError('Setup window expired; start a new session')
+            if r.get('surface') not in ('feed', 'video'):
+                raise ValueError('Confirm a visible feed or video before starting browse time')
+            self.deadline = time.monotonic()+self.config['seconds']
+            self.state.update(browsing_started_utc=utc(), browsing_seconds=self.config['seconds'])
+            self.save()
+            return dict(self.state)
         if op == 'launch':
             self.adb('shell', 'input', 'keyevent', '224')
             self.adb('shell', 'monkey', '-p', self.package, '-c', 'android.intent.category.LAUNCHER', '1')
@@ -347,11 +379,21 @@ class Flow:
             settle = float(r.get('settle', 1))
             if not 0 <= settle <= 3:
                 raise ValueError('settle must be 0..3 seconds')
-            self.fresh(r)
+            self.fresh(r, max_age=120)
             self.guard()
             # The caller must identify the currently visible surface each time.
             if r.get('surface') not in ('feed', 'video', 'carousel'):
                 raise ValueError('Confirm current surface: feed/video/carousel')
+            # Cheap pre-scroll inspection. This remains a conservative heuristic;
+            # accessibility labels may be stale and never authorize engagement.
+            try:
+                _, nodes = self.tree()
+                labels = ' '.join(n.get('text', '')+' '+n.get('content-desc', '') for n in nodes)
+                if re.search(r'(?i)\b(?:captcha|verify your identity|account suspended|sign in to continue|download & install now)\b', labels):
+                    self.blocked = True
+                    raise RuntimeError('Possible blocking prompt; observe and stop')
+            except (ET.ParseError, subprocess.TimeoutExpired):
+                self.fresh(r, max_age=45)
             w, h = self.geometry()
             points = ([int(w*.8), int(h*.45), int(w*.2), int(h*.45)] if r['surface'] == 'carousel'
                       else [int(w*.48), int(h*.74), int(w*.48), int(h*.28)])
@@ -362,6 +404,7 @@ class Flow:
             self.fresh(r)
             self.guard()
             self.adb('shell', 'input', 'keyevent', '4')
+            self.settle()
             return self.observe(r.get('mode', 'auto'))
         if op == 'type':
             self.fresh(r)
@@ -379,6 +422,7 @@ class Flow:
             self.adb('shell', 'input', 'text', "'"+value.replace(' ', '%s')+"'")
             if r.get('submit_search'):
                 self.adb('shell', 'input', 'keyevent', '66')
+            self.settle(1 if r.get('submit_search') else .35)
             return self.observe(r.get('mode', 'auto'))
         if op == 'tap':
             self.fresh(r)
@@ -398,6 +442,12 @@ class Flow:
             if (xy is None) == (selector is None):
                 raise ValueError('Supply exactly one of xy or selector')
             if selector:
+                region = r.get('selector_region')
+                if not region or len(region) != 4:
+                    raise ValueError('Selector tap needs selector_region from the current image: [x1,y1,x2,y2]')
+                rx1, ry1, rx2, ry2 = map(int, region)
+                if not (rx1 < rx2 and ry1 < ry2):
+                    raise ValueError('Invalid selector region')
                 if len(selector) != 1 or next(iter(selector)) not in ('text', 'resource-id', 'content-desc'):
                     raise ValueError('Use one exact text/resource-id/content-desc selector')
                 key, val = next(iter(selector.items()))
@@ -410,6 +460,8 @@ class Flow:
                     raise ValueError('Invalid bounds')
                 a, b, c, d = map(int, nums)
                 xy = [(a+c)//2, (b+d)//2]
+                if not (rx1 <= xy[0] < rx2 and ry1 <= xy[1] < ry2):
+                    raise ValueError('Selector location conflicts with current image region; no tap performed')
             w, h = self.geometry()
             if len(xy) != 2 or not (0 <= int(xy[0]) < w and 0 <= int(xy[1]) < h):
                 raise ValueError('Tap outside actual screenshot pixels')
@@ -419,6 +471,7 @@ class Flow:
                 self.attempts[attempt_id] = dict(post=r['post'], action=action, before=before, verified=False)
                 self.log('action_attempt', post=r['post'], action=action, attempt=attempt_id)
             self.adb('shell', 'input', 'tap', str(int(xy[0])), str(int(xy[1])))
+            self.settle()
             result = self.observe(r.get('mode', 'image'), r.get('crop'))
             if action in ENGAGEMENT:
                 result['attempt'] = attempt_id
@@ -516,6 +569,63 @@ def legacy_busy(workspace, serial):
     return busy
 
 
+def submit_request(session, request, wait=30):
+    """Shared CLI/MCP queue client. A pending mutation must not be replayed."""
+    session = Path(session).resolve()
+    if not 1 <= wait <= 75:
+        raise ValueError('wait must be 1..75 seconds')
+    state = read_json(session/'state.json')
+    if state['status'] != 'running':
+        raise RuntimeError('Worker not running: '+state['status'])
+    heartbeat = dt.datetime.fromisoformat(state['heartbeat_utc'])
+    if (dt.datetime.now(dt.timezone.utc)-heartbeat).total_seconds() > 90:
+        raise RuntimeError('Worker heartbeat stale; inspect before proceeding')
+    request = dict(request)
+    rid = str(time.time_ns())+'-'+uuid.uuid4().hex
+    request['_expires_epoch'] = time.time()+wait
+    write_json(session/'requests'/(rid+'.json'), request)
+    deadline = time.monotonic()+wait
+    response = session/'results'/(rid+'.json')
+    while time.monotonic() < deadline:
+        if response.exists():
+            return read_json(response)
+        time.sleep(.1)
+    return {'pending': rid, 'result_path': str(response),
+            'warning': 'Do not resubmit a mutation until its result is checked'}
+
+
+def start_worker(config, legacy_workspace=None):
+    """Start once; used by CLI and MCP without an intermediate CLI subprocess."""
+    session = Path(config['session']).resolve()
+    if not 1 <= config['seconds'] <= 3600:
+        raise ValueError('seconds must be 1..3600')
+    if config['app'] not in APPS or any(a not in ENGAGEMENT for a in config['allow']):
+        raise ValueError('Unknown app or engagement permission')
+    if not Path(config['adb']).is_file():
+        raise ValueError('ADB executable not found')
+    if bool(config.get('artemis_repo')) != bool(config.get('artemis_python')):
+        raise ValueError('Supply both Artemis repo and Python')
+    if config.get('artemis_repo') and (not (Path(config['artemis_repo'])/'artemis').is_dir()
+                                      or not Path(config['artemis_python']).is_file()):
+        raise ValueError('Artemis checkout or Python not found')
+    if session.exists():
+        raise ValueError('Use a new session directory')
+    busy = legacy_busy(legacy_workspace, config['serial'])
+    if busy:
+        raise RuntimeError('Legacy timed session still active: '+', '.join(busy))
+    with DeviceLock(config['serial']):
+        pass
+    for name in ('requests', 'results', 'evidence'):
+        (session/name).mkdir(parents=True)
+    config = dict(config, session=str(session))
+    write_json(session/'config.json', config)
+    with (session/'worker.log').open('ab') as log:
+        child = subprocess.Popen([sys.executable, str(ROOT/'phone_flow.py'), '_worker', '--session', str(session)],
+                                 stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+    return {'pid': child.pid, 'session': str(session), 'status': 'starting; inspect status'}
+
+
 def main():
     sys.stdout.reconfigure(encoding='utf-8')
     p = argparse.ArgumentParser(description=__doc__)
@@ -543,59 +653,18 @@ def main():
     args = p.parse_args()
     session = args.session.resolve()
     if args.command == 'start':
-        if not 1 <= args.seconds <= 3600:
-            p.error('seconds must be 1..3600')
-        if not Path(args.adb).is_file():
-            p.error('ADB executable not found')
-        if bool(args.artemis_repo) != bool(args.artemis_python):
-            p.error('Supply both --artemis-repo and --artemis-python')
-        if args.artemis_repo and (not (args.artemis_repo/'artemis').is_dir() or not args.artemis_python.is_file()):
-            p.error('Artemis checkout or Python not found')
-        if session.exists():
-            p.error('Use a new session directory')
-        busy = legacy_busy(args.legacy_workspace, args.serial)
-        if busy:
-            p.error('Legacy timed session still active: '+', '.join(busy))
-        # Probe OS lock without taking over a worker. Worker acquires it again.
-        with DeviceLock(args.serial):
-            pass
-        for name in ('requests', 'results', 'evidence'):
-            (session/name).mkdir(parents=True)
         config = dict(serial=args.serial, app=args.app, account=args.account, seconds=args.seconds,
                       allow=args.allow, session=str(session), adb=str(Path(args.adb).resolve()))
         if args.artemis_repo:
             config.update(artemis_repo=str(args.artemis_repo.resolve()), artemis_python=str(args.artemis_python.resolve()))
-        write_json(session/'config.json', config)
-        with (session/'worker.log').open('ab') as log:
-            child = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_worker', '--session', str(session)],
-                                     stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-        print(json.dumps({'pid': child.pid, 'session': str(session), 'status': 'starting; inspect status'}))
+        print(json.dumps(start_worker(config, args.legacy_workspace)))
     elif args.command == '_worker':
         try:
             Flow(read_json(session/'config.json')).run()
         except Exception as e:
             write_json(session/'state.json', dict(status='failed', error=str(e), pid=os.getpid()))
     elif args.command == 'call':
-        state = read_json(session/'state.json')
-        if state['status'] != 'running':
-            raise RuntimeError('Worker not running: '+state['status'])
-        heartbeat = dt.datetime.fromisoformat(state['heartbeat_utc'])
-        if (dt.datetime.now(dt.timezone.utc)-heartbeat).total_seconds() > 90:
-            raise RuntimeError('Worker heartbeat stale; inspect before proceeding')
-        request = read_json(args.request_file)
-        # Request expiry prevents a timed-out queued click firing later.
-        rid = str(time.time_ns())+'-'+uuid.uuid4().hex
-        request['_expires_epoch'] = time.time()+max(1, args.wait)
-        write_json(session/'requests'/(rid+'.json'), request)
-        deadline = time.monotonic()+max(1, args.wait)
-        response = session/'results'/(rid+'.json')
-        while time.monotonic() < deadline:
-            if response.exists():
-                print(json.dumps(read_json(response), ensure_ascii=False))
-                return
-            time.sleep(.1)
-        print(json.dumps({'pending': rid, 'result_path': str(response), 'warning': 'Do not resubmit a mutation until its result is checked'}))
+        print(json.dumps(submit_request(session, read_json(args.request_file), args.wait), ensure_ascii=False))
     elif args.command == 'status':
         print(json.dumps(read_json(session/'state.json'), ensure_ascii=False))
     elif args.command == 'stop':

@@ -41,3 +41,17 @@ helper attachment. Text observations can avoid sending a full image when the
 screen is text-centric. Crops reduce the pixels supplied for verification while
 retaining full local evidence. Each optimization has to be measured on the
 same device and app state; none promises a percentage speed-up in advance.
+
+
+## Connector evaluation
+
+[Mobile Next mobile-mcp](https://github.com/mobile-next/mobile-mcp) already
+provides an Apache-2.0 mobile connector. Its server source demonstrates indexed
+element references, batched commands, cached device objects, resized screenshots
+and action timing. PhoneFlow adopts the interface ideas of combined action plus
+observation and explicit image mapping, without copying source. Mobile Next was
+evaluated from source, not installed or benchmarked against this implementation.
+PhoneFlow currently retains its bounded worker, ownership lock, evidence ledger
+and existing Artemis helper. Broad blind action batches are intentionally absent
+because app transitions and stale labels need inspection. No telemetry is sent.
+The stdio adapter uses the installed stable MCP Python v1 SDK, pinned below v2.
