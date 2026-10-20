@@ -1,0 +1,104 @@
+"""Guard and accounting tests. Device observation was explored with Artemis.
+
+These tests do not touch a device or assert unverified app UI paths.
+"""
+import json
+from pathlib import Path
+import tempfile
+import time
+import unittest
+from unittest.mock import Mock
+
+from phone_flow import Flow, DeviceLock, summarize, legacy_busy, write_json, utc
+
+
+class FlowTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.flow = Flow(dict(session=str(self.root), app='tiktok', account='fixture',
+                              serial='fixture', seconds=60, allow=[], adb='unused'))
+        self.flow.package = 'com.zhiliaoapp.musically'
+        self.flow.ledger = self.root/'ledger.jsonl'
+        self.flow.adb = Mock(side_effect=AssertionError('Unexpected device action'))
+        self.flow.foreground = Mock(return_value=self.flow.package)
+        self.flow.last = dict(id='fresh', mono=time.monotonic(), result={'screenshot': 'fixture.png'})
+
+    def test_expired_queue_never_acts(self):
+        with self.assertRaises(TimeoutError):
+            self.flow.handle({'op': 'launch', '_expires_epoch': 0})
+        self.flow.adb.assert_not_called()
+
+    def test_stale_coordinate_never_acts(self):
+        self.flow.last['mono'] -= 46
+        with self.assertRaises(ValueError):
+            self.flow.handle(dict(op='tap', observation='fresh', xy=[1, 1]))
+        self.flow.adb.assert_not_called()
+
+    def test_wrong_app_never_acts(self):
+        self.flow.foreground.return_value = 'com.android.settings'
+        with self.assertRaises(RuntimeError):
+            self.flow.handle(dict(op='next', observation='fresh', surface='video'))
+        self.flow.adb.assert_not_called()
+
+    def test_unauthorized_like_never_acts(self):
+        with self.assertRaises(ValueError):
+            self.flow.handle(dict(op='tap', observation='fresh', action='like', post='p', xy=[1, 1]))
+        self.flow.adb.assert_not_called()
+
+    def test_duplicate_review_does_not_inflate_denominator(self):
+        request = dict(op='review', observation='fresh', post='creator/title')
+        self.assertTrue(self.flow.handle(request)['recorded'])
+        self.assertFalse(self.flow.handle(request)['recorded'])
+        self.assertEqual(summarize(self.flow.ledger, 'tiktok', 'fixture')['review_exposures'], 1)
+
+    def test_attempt_is_not_counted_as_success(self):
+        self.flow.log('review', post='p')
+        self.flow.log('action_attempt', post='p', action='like', attempt='x')
+        self.assertEqual(summarize(self.flow.ledger, 'tiktok', 'fixture')['verified_actions']['like'], 0)
+
+    def test_verification_needs_new_image(self):
+        self.flow.attempts['x'] = dict(post='p', action='like', before='fresh', verified=False)
+        with self.assertRaises(ValueError):
+            self.flow.handle(dict(op='verify_action', observation='fresh', attempt='x', success=True, evidence_note='red heart'))
+
+    def test_duplicate_verification_rejected(self):
+        self.flow.attempts['x'] = dict(post='p', action='like', before='before', verified=False)
+        r = dict(op='verify_action', observation='fresh', attempt='x', success=True, evidence_note='red heart')
+        self.flow.handle(r)
+        with self.assertRaises(ValueError):
+            self.flow.handle(r)
+
+    def test_account_ledgers_are_separate(self):
+        self.flow.log('review', post='p')
+        self.assertEqual(summarize(self.flow.ledger, 'instagram', 'fixture')['review_exposures'], 0)
+        self.assertEqual(summarize(self.flow.ledger, 'tiktok', 'other')['review_exposures'], 0)
+
+    def test_legacy_running_timer_blocks_new_session(self):
+        write_json(self.root/'work'/'old'/'timer.json', dict(serial='fixture', status='running', started_utc=utc(), duration_seconds=60))
+        self.assertEqual(len(legacy_busy(self.root, 'fixture')), 1)
+        self.assertEqual(legacy_busy(self.root, 'other'), [])
+
+    def test_system_overlay_does_not_inherit_underlying_app(self):
+        self.flow.foreground = Flow.foreground.__get__(self.flow)
+        self.flow.text_adb = Mock(return_value='mCurrentFocus=Window{1 u0 NotificationShade}\nmFocusedApp=ActivityRecord{1 u0 com.linkedin.android/.Main}')
+        self.assertIsNone(self.flow.foreground())
+
+    def test_existing_like_attempt_cannot_toggle_again(self):
+        self.flow.config['allow'] = ['like']
+        self.flow.reviews['p'] = 'fresh'
+        self.flow.attempts['x'] = dict(post='p', action='like', verified=False)
+        with self.assertRaises(ValueError):
+            self.flow.handle(dict(op='tap', observation='fresh', action='like', post='p', xy=[1, 1]))
+        self.flow.adb.assert_not_called()
+
+    def test_device_lock_excludes_second_owner(self):
+        with DeviceLock(str(self.root)):
+            with self.assertRaises(RuntimeError):
+                with DeviceLock(str(self.root)):
+                    self.fail('Second owner acquired the same device lock')
+
+
+if __name__ == '__main__':
+    unittest.main()

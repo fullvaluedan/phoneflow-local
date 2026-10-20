@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phoneflow-local"
+version = "0.1.0"
+description = "Bounded local Android control for an assistant, with optional Artemis observations"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = []
+
+[project.optional-dependencies]
+images = ["Pillow>=10"]
+
+[project.scripts]
+phoneflow = "phone_flow:main"
+
+[tool.setuptools]
+py-modules = ["phone_flow", "artemis_observer"]

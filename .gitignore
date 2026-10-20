@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+.env.*
+!.env.example
+phone-flow-state/
+sessions/
+evidence/
+work/
+*.log
+config.local.json
+.DS_Store
