@@ -130,6 +130,11 @@ class FlowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'once'):
             self.flow.handle(dict(op='begin_browse', observation='fresh', surface='feed'))
 
+    def test_android16_landscape_viewport_dimensions(self):
+        self.flow.text_adb = Mock(side_effect=['Physical size: 1080x2392',
+            'Viewport INTERNAL: displayId=0, uniqueId=local:1, orientation=1, logicalFrame=[0, 0, 2392, 1080]'])
+        self.assertEqual(self.flow.geometry(), (2392, 1080))
+
     def test_read_retries_transient_windows_sharing_error(self):
         with patch.object(Path, 'read_text', side_effect=[PermissionError(), '{"ok": true}']), patch('phone_flow.time.sleep'):
             self.assertEqual(read_json('fixture.json'), {'ok': True})

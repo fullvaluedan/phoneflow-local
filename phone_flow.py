@@ -214,6 +214,9 @@ class Flow:
         w, h = map(int, size[-1])
         info = self.text_adb('shell', 'dumpsys', 'input')
         m = re.search(r'SurfaceOrientation:\s*(\d+)', info)
+        if not m:
+            # Android 16 reports active display rotation in the input viewport.
+            m = re.search(r'Viewport [^\n]*displayId=0,[^\n]*orientation=(\d+)', info)
         if m and int(m[1]) in (1, 3):
             w, h = h, w
         return w, h

@@ -75,3 +75,12 @@ assistant reasoning. These are individual samples, not throughput benchmarks.
 The earlier limitations still apply: no automatic account/content recognition,
 no validated engagement workflows, and no unattended four-app classifier.
 Runtime screenshots, account identities and local configuration are not published.
+
+## Android 16 rotation regression - 2026-10-21
+
+During a repeat browsing run, LinkedIn opened in landscape. `dumpsys input`
+reported rotation in `Viewport INTERNAL ... orientation=...` rather than the
+older `SurfaceOrientation` field. The controller now recognizes the default
+display viewport, keeping swipes and tap bounds aligned with rotated screens.
+25 unit tests pass, including the new landscape viewport regression. Live
+LinkedIn scrolling was verified after restarting its full five-minute timer.
